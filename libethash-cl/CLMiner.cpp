@@ -268,6 +268,7 @@ CLMiner::~CLMiner()
 void CLMiner::report(uint64_t _nonce, WorkPackage const& _w)
 {
 	assert(_nonce != 0);
+
 	// TODO: Why re-evaluating?
 	Result r = EthashAux::eval(_w.seed, _w.header, _nonce);
 	if (r.value < _w.boundary)
@@ -294,6 +295,8 @@ void CLMiner::workLoop()
 {
 	// Memory for zero-ing buffers. Cannot be static because crashes on macOS.
 	uint32_t const c_zero = 0;
+	bool newWork = false;
+	auto kernelStart = std::chrono::high_resolution_clock::now();
 
 	uint64_t startNonce = 0;
 
@@ -309,6 +312,7 @@ void CLMiner::workLoop()
 
 			if (current.header != w.header)
 			{
+				newWork = true;
 				// New work received. Update GPU data.
 				auto localSwitchStart = std::chrono::high_resolution_clock::now();
 
@@ -319,7 +323,7 @@ void CLMiner::workLoop()
 					continue;
 				}
 
-				cllog << "New work: header" << w.header << "target" << w.boundary.hex();
+				// cllog << "New work: header" << w.header << "target" << w.boundary.hex();
 
 				if (current.seed != w.seed)
 				{
@@ -354,13 +358,20 @@ void CLMiner::workLoop()
 				auto switchEnd = std::chrono::high_resolution_clock::now();
 				auto globalSwitchTime = std::chrono::duration_cast<std::chrono::milliseconds>(switchEnd - workSwitchStart).count();
 				auto localSwitchTime = std::chrono::duration_cast<std::chrono::microseconds>(switchEnd - localSwitchStart).count();
-				cllog << "Switch time" << globalSwitchTime << "ms /" << localSwitchTime << "us";
+				cllog << "New work switch time" << globalSwitchTime << "ms /" << localSwitchTime << "us";
 			}
 
 			// Read results.
 			// TODO: could use pinned host pointer instead.
 			uint32_t results[c_maxSearchResults + 1];
 			m_queue.enqueueReadBuffer(m_searchBuffer, CL_TRUE, 0, sizeof(results), &results);
+			if (newWork)
+			{
+				newWork = false;
+				auto kernelEnd = std::chrono::high_resolution_clock::now();
+				auto kernelRunTime = std::chrono::duration_cast<std::chrono::microseconds>(kernelEnd - kernelStart).count();
+				cllog << "Kernel run time" << kernelRunTime << "us";
+			}
 
 			uint64_t nonce = 0;
 			if (results[0] > 0)
@@ -372,8 +383,10 @@ void CLMiner::workLoop()
 			}
 
 			// Run the kernel.
+			kernelStart = std::chrono::high_resolution_clock::now();
 			m_searchKernel.setArg(3, startNonce);
 			m_queue.enqueueNDRangeKernel(m_searchKernel, cl::NullRange, m_globalWorkSize, m_workgroupSize);
+			m_queue.flush();		//start kernel immediately
 
 			// Report results while the kernel is running.
 			// It takes some time because ethash must be re-evaluated on CPU.
