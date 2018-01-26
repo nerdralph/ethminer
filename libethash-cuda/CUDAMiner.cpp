@@ -53,11 +53,13 @@ CUDAMiner::~CUDAMiner()
 
 bool CUDAMiner::init(const h256& seed)
 {
-	// take local copy of work since it may end up being overwritten by kickOff/pause.
 	try {
+		if (s_dagLoadMode == DAG_LOAD_MODE_SEQUENTIAL)
+			while (s_dagLoadIndex < index)
+				this_thread::sleep_for(chrono::milliseconds(100));
 		unsigned device = s_devices[index] > -1 ? s_devices[index] : index;
 
-		cnote << "Initialising miner...";
+		cnote << "Initialising miner " << index;
 
 		EthashAux::LightType light;
 		light = EthashAux::light(seed);
@@ -95,6 +97,7 @@ void CUDAMiner::workLoop()
 	{
 		while(true)
 		{
+	                // take local copy of work since it may end up being overwritten.
 			const WorkPackage w = work();
 			
 			if (current.header != w.header || current.seed != w.seed)
@@ -465,8 +468,7 @@ void CUDAMiner::search(
 	{
 		if (initialize)
 		{
-			random_device engine;
-			m_current_nonce = uniform_int_distribution<uint64_t>()(engine);
+			m_current_nonce = get_start_nonce();
 			m_current_index = 0;
 			CUDA_SAFE_CALL(cudaDeviceSynchronize());
 			for (unsigned int i = 0; i < s_numStreams; i++)
